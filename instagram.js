@@ -90,6 +90,65 @@ function insert(box, text) {
   box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
 }
 
+/* ---------- Vorname aus dem Profil ---------- */
+
+// Instagram liefert den Profilnamen im og:title jeder Profilseite: „Markus Lau (@ma_riner983) • Instagram-Fotos …“,
+// ohne Namen „ (@username) • …“. Ergebnis: Profilname ('' = keiner hinterlegt) oder null (nicht ermittelbar).
+function nameFromTitle(title, username) {
+  const esc = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = String(title || '').match(new RegExp(`^(.*)\\(@${esc}\\)`, 'is'));
+  return m ? m[1].trim() : null;
+}
+
+async function profileName(username) {
+  // Profilseite direkt geöffnet: steht schon im Kopf der Seite
+  const here = nameFromTitle(document.querySelector('meta[property="og:title"]')?.content, username);
+  if (here !== null) return here;
+  // Sonst (z. B. direkt im Chat geöffnet) die Profilseite im Hintergrund laden
+  try {
+    const res = await fetch(`/${encodeURIComponent(username)}/`, { credentials: 'include', signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    return nameFromTitle(doc.querySelector('meta[property="og:title"]')?.content, username) ?? nameFromTitle(doc.title, username);
+  } catch {
+    return null;
+  }
+}
+
+const TITLES = new Set(['dr', 'prof', 'frau', 'herr', 'mr', 'mrs', 'ms', 'miss']);
+// Erste Wörter, die kein Vorname sind (Firmen, Coaches, „Mama von …“)
+const NOT_NAMES = new Set([
+  'mama', 'mami', 'mom', 'mum', 'mommy', 'papa', 'papi', 'dad', 'daddy', 'oma', 'opa', 'the', 'die', 'der', 'das',
+  'dein', 'deine', 'your', 'my', 'mein', 'meine', 'official', 'offiziell', 'team', 'coach', 'coaching', 'fitness',
+  'fit', 'gym', 'studio', 'shop', 'store', 'praxis', 'personal', 'personaltrainer', 'trainer', 'trainerin', 'beauty',
+  'nails', 'fashion', 'food', 'travel', 'life', 'love', 'happy', 'just', 'only', 'private', 'privat', 'fan', 'club',
+  'ernährung', 'ernährungsberatung', 'kosmetik', 'salon', 'friseur', 'physio', 'yoga', 'pilates', 'abnehmen',
+]);
+
+// „🌸 MARINA Müller | Mama“ → „Marina“. Kein brauchbarer Vorname → ''.
+function firstName(full) {
+  const words = String(full || '').normalize('NFKC').split(/[\s|•·,/]+/)
+    .map((w) => w.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '')).filter(Boolean);
+  const word = words.find((w) => !TITLES.has(w.toLowerCase()));
+  if (!word || word.length < 2 || word.length > 20 || !/^\p{L}+(?:[-'’]\p{L}+)*$/u.test(word)) return '';
+  if (NOT_NAMES.has(word.toLowerCase())) return '';
+  // Nur GROSS oder nur klein geschrieben: normal schreiben, gemischte Schreibweise (z. B. „McKenzie“) lassen
+  if (word === word.toLowerCase() || word === word.toUpperCase()) {
+    return word.toLowerCase().replace(/(^|[-'’])(\p{L})/gu, (_, sep, ch) => sep + ch.toUpperCase());
+  }
+  return word;
+}
+
+// {Name} = Vorname aus dem Profil; ohne Vorname fällt die Anrede weg („Hey {Name}, danke“ → „Hey, danke“).
+function personalize(template, username, first) {
+  const text = template.replace(/\{username\}/gi, username);
+  return (first
+    ? text.replace(/\{name\}/gi, first)
+    : text.replace(/^[ \t]*\{name\}[ \t]*[,!.]?[ \t]*|[ \t]*\{name\}/gim, '')).trim();
+}
+
+const escHtml = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]);
+
 /* ---------- Hinweisleiste im Tab ---------- */
 
 function banner(item) {
@@ -179,6 +238,14 @@ async function prepare(item, show) {
   const report = (state, extra = {}) => chrome.runtime.sendMessage({ type: 'state', state, ...extra }).catch(() => {});
   show('info', 'Warte auf Instagram …');
 
+  // Vorname nachschlagen, solange noch die Profilseite offen ist (der Klick auf „Nachricht senden“ wechselt in den Chat)
+  let nameNote = '';
+  if (item.template_text) {
+    const first = firstName(await profileName(item.username));
+    item.text = personalize(item.template_text, item.username, first);
+    nameNote = first ? ` Vorname aus dem Profil: <b>${escHtml(first)}</b>.` : ' Kein Vorname im Profil, Anrede ohne Namen.';
+  }
+
   try {
     let box;
     try {
@@ -202,12 +269,12 @@ async function prepare(item, show) {
     }
     if (norm(box.innerText) !== norm(item.text)) throw new Error('Text ließ sich nicht einfügen.');
 
-    show('ready', 'Nachricht steht im Feld. Prüfen und mit <b>Enter</b> senden.');
-    report('ready');
+    show('ready', `Nachricht steht im Feld. Prüfen und mit <b>Enter</b> senden.${nameNote}`);
+    report('ready', { text: item.text });
     watchSend(item, report, show);
   } catch (err) {
-    show('error', `${err.message} Bitte selbst einfügen.`, true);
-    report('error', { error: err.message });
+    show('error', `${escHtml(err.message)} Bitte selbst einfügen.${nameNote}`, true);
+    report('error', { error: err.message, text: item.text });
     watchSend(item, report, show); // auch von Hand eingefügte Nachrichten als gesendet erkennen
   }
 })();
