@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "igdashboard DM-Helfer",
+  "version": "1.2.0",
+  "description": "Öffnet für ausgewählte Follower Instagram-Tabs und fügt die Nachricht ein. Abschicken machst du selbst.",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["https://www.instagram.com/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.instagram.com/*"],
+      "js": ["instagram.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://localhost/*", "http://127.0.0.1/*", "https://ig.mkamleiter.de/*"],
+      "js": ["dashboard.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
